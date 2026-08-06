@@ -228,6 +228,11 @@
     margin-bottom:28px;
     flex-wrap:wrap;
   }
+  .product-header-actions{
+    display:flex;
+    gap:8px;
+    flex-shrink:0;
+  }
   .product-title-input{
     font-family:var(--font-display);
     font-size:28px;
@@ -513,6 +518,17 @@
   }
   .row-move-btn:hover{ color:var(--brass); background:var(--surface-2); }
   .row-move-btn:disabled{ color:var(--border); cursor:default; background:none; }
+  .row-dup-btn{
+    background:none;
+    border:none;
+    color:var(--text-muted);
+    cursor:pointer;
+    font-size:13px;
+    padding:4px 6px;
+    border-radius:3px;
+    line-height:1;
+  }
+  .row-dup-btn:hover{ color:var(--sage); background:rgba(76,138,107,.12); }
   .amortize-input{
     width:90px;
     font-family:var(--font-mono);
@@ -910,6 +926,42 @@ const app = {
     render();
     await saveProject(p);
   },
+  async duplicateProject(pid){
+    const original = state.projects[pid];
+    if(!original) return;
+
+    const groupIdMap = {};
+    const newGroups = (original.groups || []).map(g=>{
+      const newId = uid('g_');
+      groupIdMap[g.id] = newId;
+      return { id: newId, name: g.name };
+    });
+
+    const newExpenses = (original.expenses || []).map(e=>{
+      return Object.assign({}, e, {
+        id: uid('e_'),
+        groupId: (e.groupId && groupIdMap[e.groupId]) ? groupIdMap[e.groupId] : null
+      });
+    });
+
+    const copy = {
+      id: uid('p_'),
+      name: original.name + '（複製）',
+      quantity: original.quantity,
+      sellingPrice: original.sellingPrice,
+      createdAt: Date.now(),
+      expenses: newExpenses,
+      groups: newGroups
+    };
+
+    state.projects[copy.id] = copy;
+    state.order.push(copy.id);
+    state.currentId = copy.id;
+    state.view = 'detail';
+    render();
+    await saveProject(copy);
+    showToast('已複製產品，記得修改名稱與數量');
+  },
   selectProject(id){
     state.currentId = id;
     state.view = 'detail';
@@ -973,6 +1025,18 @@ const app = {
     p.expenses = p.expenses.filter(e => e.id !== eid);
     render();
     await saveProject(p);
+  },
+  async duplicateExpense(pid, eid){
+    const p = state.projects[pid];
+    if(!p) return;
+    const idx = p.expenses.findIndex(e => e.id === eid);
+    if(idx === -1) return;
+    const original = p.expenses[idx];
+    const copy = Object.assign({}, original, { id: uid('e_') });
+    p.expenses.splice(idx + 1, 0, copy);
+    render();
+    await saveProject(p);
+    showToast('已複製這筆項目，記得修改品名');
   },
   async moveExpense(pid, eid, direction){
     const p = state.projects[pid];
@@ -1527,6 +1591,7 @@ function renderDetail(p){
         <div class="row-actions">
           <button class="row-move-btn" ${isFirst?'disabled':''} onclick="app.moveExpense('${p.id}','${e.id}','up')" title="上移">▲</button>
           <button class="row-move-btn" ${isLast?'disabled':''} onclick="app.moveExpense('${p.id}','${e.id}','down')" title="下移">▼</button>
+          <button class="row-dup-btn" onclick="app.duplicateExpense('${p.id}','${e.id}')" title="複製這筆">⧉</button>
           <button class="row-del-btn" onclick="app.deleteExpense('${p.id}','${e.id}')">刪除</button>
         </div>
       </td>
@@ -1565,7 +1630,10 @@ function renderDetail(p){
           </div>
         </div>
       </div>
-      <button class="btn btn-danger btn-sm" id="delbtn_${p.id}" onclick="app.deleteProject('${p.id}')">刪除此產品</button>
+      <div class="product-header-actions">
+        <button class="btn btn-sm" onclick="app.duplicateProject('${p.id}')">複製此產品</button>
+        <button class="btn btn-danger btn-sm" id="delbtn_${p.id}" onclick="app.deleteProject('${p.id}')">刪除此產品</button>
+      </div>
     </div>
 
     <div class="stat-row">
