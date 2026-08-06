@@ -451,6 +451,19 @@
     padding:0 10px 10px;
     border-bottom:1px solid var(--border);
   }
+  .th-sort-btn{
+    background:none;
+    border:none;
+    padding:0;
+    font-family:inherit;
+    font-size:inherit;
+    font-weight:inherit;
+    letter-spacing:inherit;
+    text-transform:inherit;
+    color:inherit;
+    cursor:pointer;
+  }
+  .th-sort-btn:hover{ color:var(--brass); }
   .ledger tbody td{
     padding:11px 10px;
     border-bottom:1px solid var(--border-soft);
@@ -820,6 +833,8 @@ const state = {
   loaded: false
 };
 
+const sortState = {}; // productId -> { field, dir }
+
 function fmtMoney(n){
   n = Number(n)||0;
   return 'NT$ ' + Math.round(n).toLocaleString('zh-TW');
@@ -969,6 +984,44 @@ const app = {
     const tmp = p.expenses[idx];
     p.expenses[idx] = p.expenses[targetIdx];
     p.expenses[targetIdx] = tmp;
+    render();
+    await saveProject(p);
+  },
+  async sortExpenses(pid, field){
+    const p = state.projects[pid];
+    if(!p) return;
+    const prev = sortState[pid];
+    const dir = (prev && prev.field === field && prev.dir === 'asc') ? 'desc' : 'asc';
+    sortState[pid] = { field, dir };
+
+    const groupNameById = {};
+    (p.groups||[]).forEach(g=>{ groupNameById[g.id] = g.name; });
+
+    const numericFields = ['amount','amortizeQty'];
+    const getValue = (e)=>{
+      if(field === 'group'){
+        return (e.groupId && groupNameById[e.groupId]) ? groupNameById[e.groupId] : '';
+      }
+      if(field === 'amortizeQty'){
+        return e.amortizeQty ? Number(e.amortizeQty) : (Number(p.quantity)||0);
+      }
+      if(field === 'amount'){
+        return Number(e.amount) || 0;
+      }
+      return (e[field] || '').toString();
+    };
+
+    p.expenses.sort((a,b)=>{
+      const va = getValue(a), vb = getValue(b);
+      let cmp;
+      if(numericFields.includes(field)){
+        cmp = va - vb;
+      }else{
+        cmp = va.localeCompare(vb, 'zh-TW');
+      }
+      return dir === 'asc' ? cmp : -cmp;
+    });
+
     render();
     await saveProject(p);
   },
@@ -1482,6 +1535,14 @@ function renderDetail(p){
 
   const catOptions = CATEGORIES.map(c=>`<option value="${c}">${c}</option>`).join('');
 
+  const currentSort = sortState[p.id] || {};
+  function sortableHeader(field, label, alignRight){
+    const isActive = currentSort.field === field;
+    const arrow = isActive ? (currentSort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+    const style = alignRight ? ' style="text-align:right;"' : '';
+    return `<th${style}><button class="th-sort-btn" onclick="app.sortExpenses('${p.id}','${field}')">${label}${arrow}</button></th>`;
+  }
+
   return `
     <div class="product-header">
       <div>
@@ -1579,7 +1640,15 @@ function renderDetail(p){
     <div class="section-title">開銷明細台帳</div>
     <table class="ledger">
       <thead><tr>
-        <th>日期</th><th>分類</th><th>品項</th><th style="text-align:right;">金額</th><th>攤提數量</th><th>群組</th><th>廠商</th><th>備註</th><th></th>
+        ${sortableHeader('date','日期')}
+        ${sortableHeader('category','分類')}
+        ${sortableHeader('name','品項')}
+        ${sortableHeader('amount','金額', true)}
+        ${sortableHeader('amortizeQty','攤提數量')}
+        ${sortableHeader('group','群組')}
+        ${sortableHeader('vendor','廠商')}
+        ${sortableHeader('note','備註')}
+        <th></th>
       </tr></thead>
       <tbody>${expenseRows}</tbody>
       <tfoot><tr>
