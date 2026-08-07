@@ -1449,37 +1449,42 @@ const app = {
       const logoImg = document.querySelector('.brand-logo img');
       const logoSrc = logoImg ? logoImg.src : '';
 
-      for(let i=0; i<targetIds.length; i++){
-        const p = state.projects[targetIds[i]];
+      const captureToCanvas = async (html)=>{
         const container = document.createElement('div');
         container.style.position = 'fixed';
         container.style.left = '-99999px';
         container.style.top = '0';
         container.style.zIndex = '-1';
-        container.innerHTML = buildPrintSectionHTML(p, logoSrc);
+        container.innerHTML = html;
         document.body.appendChild(container);
-
         await new Promise(r=>setTimeout(r, 60));
-
         const canvas = await html2canvas(container, { scale:2, backgroundColor:'#ffffff', useCORS:true });
         document.body.removeChild(container);
+        return canvas;
+      };
 
-        const imgData = canvas.toDataURL('image/png');
-        const imgWidth = pageWidth;
-        const imgHeight = canvas.height * imgWidth / canvas.width;
-        let heightLeft = imgHeight;
-        let position = 0;
+      // ---------- 第一頁：總覽 ----------
+      const products = targetIds.map(id => state.projects[id]);
+      const summaryCanvas = await captureToCanvas(buildSummaryPageHTML(products, logoSrc));
+      const summaryImgWidth = pageWidth;
+      const summaryImgHeight = summaryCanvas.height * summaryImgWidth / summaryCanvas.width;
+      doc.addImage(summaryCanvas.toDataURL('image/png'), 'PNG', 0, 0, summaryImgWidth, Math.min(summaryImgHeight, pageHeight));
 
-        if(i > 0) doc.addPage();
-        doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-        heightLeft -= pageHeight;
+      // ---------- 接下來：每個產品固定一頁，內容自動縮小塞進單頁 ----------
+      for(let i=0; i<targetIds.length; i++){
+        const p = state.projects[targetIds[i]];
+        const canvas = await captureToCanvas(buildPrintSectionHTML(p, logoSrc));
 
-        while(heightLeft > 0){
-          position = heightLeft - imgHeight;
-          doc.addPage();
-          doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-          heightLeft -= pageHeight;
+        let imgWidth = pageWidth;
+        let imgHeight = canvas.height * imgWidth / canvas.width;
+        if(imgHeight > pageHeight){
+          imgHeight = pageHeight;
+          imgWidth = canvas.width * imgHeight / canvas.height;
         }
+        const x = (pageWidth - imgWidth) / 2;
+
+        doc.addPage();
+        doc.addImage(canvas.toDataURL('image/png'), 'PNG', x, 0, imgWidth, imgHeight);
       }
 
       const today = new Date().toISOString().slice(0,10).replace(/-/g,'');
@@ -1636,6 +1641,56 @@ function buildCostStructureChartHTML(c){
       </svg>
       <div class="pdf-legend">${legend}</div>
     </div>`;
+}
+
+function buildSummaryPageHTML(products, logoSrc){
+  const logoHtml = logoSrc ? `<img class="pdf-logo" src="${logoSrc}">` : `<div style="font-weight:700;">CHUANHO 川禾天然有限公司</div>`;
+  const now = new Date();
+  const genTime = now.toLocaleString('zh-TW', { hour12:false });
+
+  let grandTotal = 0;
+  const rows = products.map(p=>{
+    const c = calc(p);
+    grandTotal += c.totalCost;
+    const marginText = c.grossMargin === null ? '—' : c.grossMargin.toFixed(1) + '%';
+    const marginStyle = c.grossMargin === null ? '' : `style="color:${c.grossMargin>=0 ? '#4C8A6B' : '#BD5138'}; font-weight:700;"`;
+    return `<tr>
+      <td>${escapeHtml(p.name)}</td>
+      <td class="num">${p.quantity}</td>
+      <td class="num">${fmtMoney(c.totalCost)}</td>
+      <td class="num">${fmtMoney2(c.unitCost)}</td>
+      <td class="num">${fmtMoney(c.sellingPrice)}</td>
+      <td class="num">${fmtMoney2(c.grossProfit)}</td>
+      <td class="num" ${marginStyle}>${marginText}</td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="pdf-page">
+    <div class="pdf-header">
+      ${logoHtml}
+      <div class="pdf-header-meta">產品成本台帳・總覽<br>匯出時間：${genTime}</div>
+    </div>
+    <div class="pdf-subtitle">PRODUCT COST SUMMARY</div>
+    <div class="pdf-title">產品總覽</div>
+    <div class="pdf-meta-row">
+      <div class="pdf-meta-item"><span class="pdf-meta-label">產品數</span><b>${products.length}</b></div>
+      <div class="pdf-meta-item"><span class="pdf-meta-label">總成本合計</span><b>${fmtMoney(grandTotal)}</b></div>
+    </div>
+    <div class="pdf-section-title">各產品比較</div>
+    <table class="pdf-table">
+      <thead><tr>
+        <th>產品</th>
+        <th style="text-align:right;">生產數量</th>
+        <th style="text-align:right;">總成本</th>
+        <th style="text-align:right;">單位成本</th>
+        <th style="text-align:right;">售價</th>
+        <th style="text-align:right;">毛利(每個)</th>
+        <th style="text-align:right;">毛利率</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="pdf-footer">CHUANHO 川禾天然有限公司 · 產品成本台帳</div>
+  </div>`;
 }
 
 function buildPrintSectionHTML(p, logoSrc){
