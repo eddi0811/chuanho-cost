@@ -2,6 +2,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 
@@ -97,8 +99,8 @@
   .project-tab{
     position:relative;
     display:flex;
-    flex-direction:column;
-    gap:3px;
+    align-items:center;
+    gap:10px;
     padding:12px 14px;
     border-radius:3px;
     border:1px solid transparent;
@@ -106,6 +108,20 @@
     cursor:pointer;
     text-align:left;
     transition:background .15s ease, border-color .15s ease;
+  }
+  .project-tab-text{
+    display:flex;
+    flex-direction:column;
+    gap:3px;
+    min-width:0;
+    flex:1;
+  }
+  .project-select-checkbox{
+    flex-shrink:0;
+    width:15px;
+    height:15px;
+    accent-color:var(--brass);
+    cursor:pointer;
   }
   .project-tab:hover{ background:var(--surface-2); }
   .project-tab.active{
@@ -786,6 +802,7 @@
         <button class="tab-btn" id="tabOverview" onclick="app.setView('overview')">總覽比較</button>
       </div>
       <button class="btn btn-sm" onclick="app.exportExcel()">⬇ 匯出 Excel</button>
+      <button class="btn btn-sm" onclick="app.exportPDF()">⬇ 匯出 PDF</button>
     </div>
     <div class="content" id="content"></div>
   </main>
@@ -846,7 +863,8 @@ const state = {
   order: [],          // display order of ids
   currentId: null,
   view: 'detail',
-  loaded: false
+  loaded: false,
+  selectedForExport: new Set()
 };
 
 const sortState = {}; // productId -> { field, dir }
@@ -965,6 +983,14 @@ const app = {
   selectProject(id){
     state.currentId = id;
     state.view = 'detail';
+    render();
+  },
+  toggleExportSelect(id){
+    if(state.selectedForExport.has(id)){
+      state.selectedForExport.delete(id);
+    }else{
+      state.selectedForExport.add(id);
+    }
     render();
   },
   setView(v){
@@ -1397,6 +1423,73 @@ const app = {
       showToast('匯出失敗，請重試');
     }
   },
+  async exportPDF(){
+    if(typeof html2canvas === 'undefined' || typeof window.jspdf === 'undefined'){
+      showToast('匯出功能載入中，請稍後再試一次');
+      return;
+    }
+    let targetIds = Array.from(state.selectedForExport).filter(id => state.projects[id]);
+    if(targetIds.length === 0){
+      if(state.currentId && state.projects[state.currentId]){
+        targetIds = [state.currentId];
+      }else{
+        showToast('請先選擇要匯出的產品（左側打勾，或先開啟一個產品）');
+        return;
+      }
+    }
+
+    injectPdfStyles();
+    showToast('正在產生 PDF，請稍候…');
+
+    try{
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ unit:'mm', format:'a4' });
+      const pageWidth = 210;
+      const pageHeight = 297;
+      const logoImg = document.querySelector('.brand-logo img');
+      const logoSrc = logoImg ? logoImg.src : '';
+
+      for(let i=0; i<targetIds.length; i++){
+        const p = state.projects[targetIds[i]];
+        const container = document.createElement('div');
+        container.style.position = 'fixed';
+        container.style.left = '-99999px';
+        container.style.top = '0';
+        container.style.zIndex = '-1';
+        container.innerHTML = buildPrintSectionHTML(p, logoSrc);
+        document.body.appendChild(container);
+
+        await new Promise(r=>setTimeout(r, 60));
+
+        const canvas = await html2canvas(container, { scale:2, backgroundColor:'#ffffff', useCORS:true });
+        document.body.removeChild(container);
+
+        const imgData = canvas.toDataURL('image/png');
+        const imgWidth = pageWidth;
+        const imgHeight = canvas.height * imgWidth / canvas.width;
+        let heightLeft = imgHeight;
+        let position = 0;
+
+        if(i > 0) doc.addPage();
+        doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+
+        while(heightLeft > 0){
+          position = heightLeft - imgHeight;
+          doc.addPage();
+          doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+          heightLeft -= pageHeight;
+        }
+      }
+
+      const today = new Date().toISOString().slice(0,10).replace(/-/g,'');
+      doc.save(`產品成本台帳_${today}.pdf`);
+      showToast('已匯出 PDF');
+    }catch(err){
+      console.error(err);
+      showToast('匯出 PDF 失敗，請重試');
+    }
+  },
   async deleteProject(id){
     const btn = document.getElementById('delbtn_' + id);
     if(btn && btn.dataset.armed !== '1'){
@@ -1440,6 +1533,169 @@ function expenseUnitContribution(e, productQty){
   return basis > 0 ? amt / basis : 0;
 }
 
+// ---------- PDF export helpers ----------
+function injectPdfStyles(){
+  if(document.getElementById('pdf-print-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'pdf-print-styles';
+  style.textContent = `
+    .pdf-page{
+      width:780px;
+      background:#FFFFFF;
+      color:#2C3245;
+      font-family:'Noto Sans TC', sans-serif;
+      padding:36px 40px;
+      box-sizing:border-box;
+    }
+    .pdf-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:24px; padding-bottom:16px; border-bottom:2px solid #6E7AA3; }
+    .pdf-logo{ height:40px; }
+    .pdf-header-meta{ text-align:right; font-size:11px; color:#6B7388; }
+    .pdf-title{ font-family:'Noto Serif TC', serif; font-size:24px; font-weight:700; margin:0 0 4px; color:#2C3245; }
+    .pdf-subtitle{ font-size:11px; letter-spacing:.1em; color:#6E7AA3; text-transform:uppercase; margin-bottom:18px; }
+    .pdf-meta-row{ display:flex; gap:28px; margin-bottom:20px; flex-wrap:wrap; }
+    .pdf-meta-item{ font-size:12px; }
+    .pdf-meta-item b{ display:block; font-size:15px; color:#2C3245; margin-top:2px; }
+    .pdf-meta-label{ color:#9AA2B6; font-size:10px; letter-spacing:.08em; text-transform:uppercase; }
+    .pdf-stat-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:24px; }
+    .pdf-stat-card{ background:#F3F5FA; border:1px solid #E2E8F2; border-radius:5px; padding:12px 14px; }
+    .pdf-stat-label{ font-size:9px; letter-spacing:.08em; text-transform:uppercase; color:#9AA2B6; margin-bottom:6px; }
+    .pdf-stat-value{ font-size:16px; font-weight:700; color:#2C3245; }
+    .pdf-stat-value.pos{ color:#4C8A6B; }
+    .pdf-stat-value.neg{ color:#BD5138; }
+    .pdf-section-title{ font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:#9AA2B6; margin:20px 0 8px; border-bottom:1px solid #E2E8F2; padding-bottom:6px; }
+    .pdf-table{ width:100%; border-collapse:collapse; font-size:11px; }
+    .pdf-table th{ text-align:left; background:#6E7AA3; color:#FFFFFF; padding:7px 8px; font-weight:600; }
+    .pdf-table td{ padding:6px 8px; border-bottom:1px solid #EDF0F7; }
+    .pdf-table tr:nth-child(even) td{ background:#F8F9FC; }
+    .pdf-table .num{ text-align:right; }
+    .pdf-table tfoot td{ font-weight:700; border-top:2px solid #6E7AA3; background:#EDF0F7; }
+    .pdf-chart-row{ display:flex; align-items:center; gap:28px; margin-bottom:20px; }
+    .pdf-legend{ display:flex; flex-direction:column; gap:7px; }
+    .pdf-legend-item{ display:flex; align-items:center; gap:8px; font-size:11px; }
+    .pdf-legend-dot{ width:10px; height:10px; border-radius:2px; flex-shrink:0; }
+    .pdf-legend-label{ width:52px; color:#2C3245; font-weight:600; }
+    .pdf-legend-value{ color:#6B7388; }
+    .pdf-footer{ margin-top:24px; font-size:9px; color:#9AA2B6; text-align:right; }
+  `;
+  document.head.appendChild(style);
+}
+
+const PDF_CATEGORY_COLORS = {
+  '材料費': '#E8A15C',
+  '加工費': '#5B87C5',
+  '檢驗費': '#5FAE7B',
+  '包裝費': '#D8688F',
+  '運費':   '#8F7AC5',
+  '其他':   '#A9A9A9'
+};
+
+function buildCostStructureChartHTML(c){
+  const entries = Object.keys(c.byCategory)
+    .filter(k => c.byCategory[k] > 0)
+    .sort((a,b)=> c.byCategory[b]-c.byCategory[a]);
+
+  if(entries.length === 0){
+    return `<div class="pdf-section-title">成本結構</div><div style="font-size:11px;color:#9AA2B6;">尚無開銷資料</div>`;
+  }
+
+  const total = c.totalCost || 1;
+  const r = 60, cx = 80, cy = 80;
+  const circumference = 2 * Math.PI * r;
+  let cumulative = 0;
+
+  const circles = entries.map(cat=>{
+    const val = c.byCategory[cat];
+    const frac = val / total;
+    const dash = frac * circumference;
+    const color = PDF_CATEGORY_COLORS[cat] || PDF_CATEGORY_COLORS['其他'];
+    const circle = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="26"
+      stroke-dasharray="${dash.toFixed(2)} ${(circumference - dash).toFixed(2)}"
+      stroke-dashoffset="${(-cumulative).toFixed(2)}"
+      transform="rotate(-90 ${cx} ${cy})"></circle>`;
+    cumulative += dash;
+    return circle;
+  }).join('');
+
+  const legend = entries.map(cat=>{
+    const val = c.byCategory[cat];
+    const pct = (val/total*100).toFixed(1);
+    const color = PDF_CATEGORY_COLORS[cat] || PDF_CATEGORY_COLORS['其他'];
+    return `<div class="pdf-legend-item">
+      <span class="pdf-legend-dot" style="background:${color}"></span>
+      <span class="pdf-legend-label">${escapeHtml(cat)}</span>
+      <span class="pdf-legend-value">${fmtMoney(val)} · ${pct}%</span>
+    </div>`;
+  }).join('');
+
+  return `<div class="pdf-section-title">成本結構</div>
+    <div class="pdf-chart-row">
+      <svg width="160" height="160" viewBox="0 0 160 160">
+        ${circles}
+        <text x="80" y="76" text-anchor="middle" font-size="10" fill="#9AA2B6" font-family="'Noto Sans TC',sans-serif">總成本</text>
+        <text x="80" y="93" text-anchor="middle" font-size="13" font-weight="700" fill="#2C3245" font-family="'Noto Sans TC',sans-serif">${fmtMoney(c.totalCost)}</text>
+      </svg>
+      <div class="pdf-legend">${legend}</div>
+    </div>`;
+}
+
+function buildPrintSectionHTML(p, logoSrc){
+  const c = calc(p);
+  const groups = p.groups || [];
+  const groupNameById = {};
+  groups.forEach(g=>{ groupNameById[g.id] = g.name; });
+
+  const marginClass = c.grossMargin === null ? '' : (c.grossMargin >= 0 ? 'pos' : 'neg');
+  const marginText = c.grossMargin === null ? '—' : (c.grossMargin.toFixed(1) + '%');
+  const profitClass = c.grossProfit >= 0 ? 'pos' : 'neg';
+
+  const rows = p.expenses.map(e=>{
+    const basisNote = e.amortizeQty ? e.amortizeQty : `${p.quantity}（沿用）`;
+    const groupName = (e.groupId && groupNameById[e.groupId]) ? groupNameById[e.groupId] : '未分類';
+    return `<tr>
+      <td>${escapeHtml(e.date||'—')}</td>
+      <td>${escapeHtml(e.category)}</td>
+      <td>${escapeHtml(e.name)}</td>
+      <td class="num">${fmtMoney(e.amount)}</td>
+      <td class="num">${basisNote}</td>
+      <td>${escapeHtml(groupName)}</td>
+      <td>${escapeHtml(e.vendor||'—')}</td>
+      <td>${escapeHtml(e.note||'—')}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="8" style="text-align:center; color:#9AA2B6; padding:16px 0;">尚無開銷項目</td></tr>`;
+
+  const logoHtml = logoSrc ? `<img class="pdf-logo" src="${logoSrc}">` : `<div style="font-weight:700;">CHUANHO 川禾天然有限公司</div>`;
+  const now = new Date();
+  const genTime = now.toLocaleString('zh-TW', { hour12:false });
+
+  return `<div class="pdf-page">
+    <div class="pdf-header">
+      ${logoHtml}
+      <div class="pdf-header-meta">產品成本台帳<br>匯出時間：${genTime}</div>
+    </div>
+    <div class="pdf-subtitle">PRODUCT COST REPORT</div>
+    <div class="pdf-title">${escapeHtml(p.name || '未命名產品')}</div>
+    <div class="pdf-meta-row">
+      <div class="pdf-meta-item"><span class="pdf-meta-label">生產數量</span><b>${p.quantity}</b></div>
+      <div class="pdf-meta-item"><span class="pdf-meta-label">售價</span><b>${fmtMoney(p.sellingPrice)}</b></div>
+      <div class="pdf-meta-item"><span class="pdf-meta-label">建立日期</span><b>${new Date(p.createdAt).toLocaleDateString('zh-TW')}</b></div>
+    </div>
+    <div class="pdf-stat-grid">
+      <div class="pdf-stat-card"><div class="pdf-stat-label">總成本</div><div class="pdf-stat-value">${fmtMoney(c.totalCost)}</div></div>
+      <div class="pdf-stat-card"><div class="pdf-stat-label">單位成本</div><div class="pdf-stat-value">${fmtMoney2(c.unitCost)}</div></div>
+      <div class="pdf-stat-card"><div class="pdf-stat-label">毛利（每個）</div><div class="pdf-stat-value ${profitClass}">${fmtMoney2(c.grossProfit)}</div></div>
+      <div class="pdf-stat-card"><div class="pdf-stat-label">毛利率</div><div class="pdf-stat-value ${marginClass}">${marginText}</div></div>
+    </div>
+    ${buildCostStructureChartHTML(c)}
+    <div class="pdf-section-title">開銷明細</div>
+    <table class="pdf-table">
+      <thead><tr><th>日期</th><th>分類</th><th>品項</th><th style="text-align:right;">金額</th><th style="text-align:right;">攤提數量</th><th>群組</th><th>廠商</th><th>備註</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td colspan="3">合計</td><td class="num">${fmtMoney(c.totalCost)}</td><td colspan="4"></td></tr></tfoot>
+    </table>
+    <div class="pdf-footer">CHUANHO 川禾天然有限公司 · 產品成本台帳</div>
+  </div>`;
+}
+
 // ---------- Rendering ----------
 function render(){
   renderSidebar();
@@ -1461,10 +1717,15 @@ function renderSidebar(){
     const p = state.projects[id];
     const c = calc(p);
     const active = id === state.currentId ? 'active' : '';
-    return `<button class="project-tab ${active}" onclick="app.selectProject('${id}')">
-      <span class="project-tab-name">${escapeHtml(p.name || '未命名產品')}</span>
-      <span class="project-tab-cost">${fmtMoney(c.totalCost)}</span>
-    </button>`;
+    const checked = state.selectedForExport.has(id) ? 'checked' : '';
+    return `<div class="project-tab ${active}" onclick="app.selectProject('${id}')">
+      <input type="checkbox" class="project-select-checkbox" title="選取以匯出 PDF"
+        onclick="event.stopPropagation(); app.toggleExportSelect('${id}')" ${checked}>
+      <div class="project-tab-text">
+        <span class="project-tab-name">${escapeHtml(p.name || '未命名產品')}</span>
+        <span class="project-tab-cost">${fmtMoney(c.totalCost)}</span>
+      </div>
+    </div>`;
   }).join('');
 }
 
